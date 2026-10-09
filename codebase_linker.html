@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Codebase Linker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Highlight.js for Code Beautification -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+
+    <style>
+        .scrollbar-hide::-webkit-scrollbar { display: none; }
+        .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Highlight animation for located files */
+        @keyframes pulse-highlight {
+            0% { background-color: #fef08a; transform: scale(1); }
+            50% { background-color: #fde047; transform: scale(1.02); }
+            100% { background-color: transparent; transform: scale(1); }
+        }
+        .highlight-file { animation: pulse-highlight 2s ease-out; }
+    </style>
+</head>
+<body class="bg-[#fdf8f5] h-screen w-full overflow-hidden text-slate-900 font-sans selection:bg-yellow-300 flex flex-col">
+
+    <!-- Navbar -->
+    <header class="bg-white border-b-2 border-black flex items-center justify-between px-4 py-3 shadow-[0px_2px_0px_0px_rgba(0,0,0,1)] z-20 shrink-0">
+        <h1 class="font-black text-xl tracking-tight flex items-center gap-2">
+            🔗 Codebase Linker
+        </h1>
+        <div id="nav-actions" class="flex gap-3">
+            <!-- Buttons injected here by JS -->
+        </div>
+    </header>
+
+    <!-- Main Workspace (3 Panes) -->
+    <div id="workspace" class="flex-1 flex w-full overflow-hidden hidden">
+        
+        <!-- LEFT COLUMN -->
+        <div class="w-1/2 flex flex-col border-r-2 border-black bg-white z-10 shadow-[2px_0px_0px_0px_rgba(0,0,0,1)]">
+            
+            <!-- Pane 1: Main Explorer -->
+            <div class="h-1/2 flex flex-col border-b-2 border-black">
+                <div class="bg-amber-100 border-b border-black p-2 text-sm font-bold flex justify-between items-center">
+                    <span>📁 Main Explorer</span>
+                    <span class="text-xs text-gray-500 font-normal">Double-click to preview</span>
+                </div>
+                <div id="pane1-breadcrumbs" class="px-3 py-2 border-b border-gray-200 flex gap-1 items-center overflow-x-auto whitespace-nowrap text-sm bg-gray-50"></div>
+                <div id="pane1-content" class="flex-1 overflow-y-auto p-2 space-y-1"></div>
+            </div>
+
+            <!-- Pane 2: Linking Target Explorer -->
+            <div class="h-1/2 flex flex-col bg-gray-50 relative">
+                <div class="bg-purple-200 border-b border-black p-2 text-sm font-bold">
+                    🔗 Link Target Explorer
+                </div>
+                <!-- Overlay when not linking -->
+                <div id="pane2-overlay" class="absolute inset-0 bg-white/80 backdrop-blur-[1px] flex flex-col items-center justify-center z-10 text-center p-4">
+                    <span class="text-4xl mb-2">☝️</span>
+                    <h3 class="font-bold text-gray-700">Click "Link File" above</h3>
+                    <p class="text-sm text-gray-500">Select a file in the Main Explorer to start linking.</p>
+                </div>
+                
+                <div id="pane2-breadcrumbs" class="px-3 py-2 border-b border-gray-200 flex gap-1 items-center overflow-x-auto whitespace-nowrap text-sm bg-white"></div>
+                <div id="pane2-content" class="flex-1 overflow-y-auto p-2 space-y-1 bg-white"></div>
+            </div>
+        </div>
+
+        <!-- RIGHT COLUMN -->
+        <div class="w-1/2 flex flex-col bg-[#282c34] text-white">
+            <!-- Pane 3: Preview / Links -->
+            <div class="bg-[#1e2227] border-b border-black p-2 flex gap-2">
+                <button id="tab-code" onclick="switchTab('code')" class="px-4 py-1 text-sm font-bold bg-[#282c34] rounded-t-lg border border-b-0 border-gray-600 text-white">Code Preview</button>
+                <button id="tab-links" onclick="switchTab('links')" class="px-4 py-1 text-sm font-bold bg-transparent rounded-t-lg border border-transparent text-gray-400 hover:text-white">Linked Files</button>
+            </div>
+            <div id="pane3-content" class="flex-1 overflow-y-auto p-4 relative">
+                <!-- Content injected here -->
+                <div class="absolute inset-0 flex items-center justify-center text-gray-500 font-medium">
+                    Select a file to preview
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Initial Loading / Setup Screen -->
+    <div id="setup-screen" class="flex-1 flex flex-col items-center justify-center bg-[#fdf8f5]">
+        <div id="setup-content" class="text-center">
+            <!-- Injected by JS -->
+        </div>
+    </div>
+
+    <!-- Data & Logic -->
+    <script id="main-script">
+        // --- Static Data ---
+        let STATIC_DATA = /*INJECT_DATA*/null/*END_INJECT*/;
+
+        // --- State Management ---
+        let rootNode = null;
+        let nodeMap = new Map();
+        let fileLinks = {}; // { "file-id": ["target-id-1", "target-id-2"] }
+        
+        let path1 = []; // Main Explorer path
+        let path2 = []; // Link Explorer path
+        let activeLinkSource = null; // ID of file we are linking FROM
+        let activePreviewFile = null; // ID of file in preview pane
+        
+        let activeTab = 'code'; // 'code' or 'links'
+        let isStaticMode = false; // True if opened from an exported file
+
+        // Initialize from Exported Data
+        if (STATIC_DATA) {
+            isStaticMode = true;
+            rootNode = STATIC_DATA.tree;
+            fileLinks = STATIC_DATA.links;
+            activeTab = 'links'; // Default to links tab in exported mode
+            
+            function rebuildMap(node) {
+                nodeMap.set(node.id, node);
+                if (node.children) node.children.forEach(rebuildMap);
+            }
+            rebuildMap(rootNode);
+        }
+
+        // --- Icons (Small list versions) ---
+        const icons = {
+            folder: `<svg width="18" height="18" viewBox="0 0 24 24" fill="#fde047" stroke="black" stroke-width="2"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>`,
+            file: `<svg width="18" height="18" viewBox="0 0 24 24" fill="#f1f5f9" stroke="black" stroke-width="2"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>`,
+            home: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`,
+            link: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>`
+        };
+
+        // --- File System Logic ---
+        async function openLocalFolder() {
+            if (!window.showDirectoryPicker) return alert("Browser not supported. Use Chrome/Edge.");
+            try {
+                const dirHandle = await window.showDirectoryPicker({ mode: 'read' });
+                
+                // If reconnecting in static mode, just rebind handles
+                if (isStaticMode && rootNode && dirHandle.name === rootNode.name) {
+                    await rebindHandles(rootNode, dirHandle);
+                    isStaticMode = false; // Full access restored
+                    renderApp();
+                    return;
+                }
+
+                // Fresh start
+                rootNode = await buildTree(dirHandle);
+                path1 = [];
+                renderApp();
+            } catch (e) {
+                if (e.name !== 'AbortError') console.error(e);
+            }
+        }
+
+        async function buildTree(dirHandle, parentPath = '') {
+            const node = {
+                id: crypto.randomUUID(),
+                name: dirHandle.name,
+                type: 'folder',
+                handle: dirHandle,
+                path: parentPath + '/' + dirHandle.name,
+                children: []
+            };
+            nodeMap.set(node.id, node);
+            
+            for await (const entry of dirHandle.values()) {
+                if (entry.kind === 'directory') {
+                    try {
+                        node.children.push(await buildTree(entry, node.path));
+                    } catch(e) {} // Skip locked
+                } else {
+                    const fileNode = {
+                        id: crypto.randomUUID(),
+                        name: entry.name,
+                        type: 'file',
+                        handle: entry,
+                        path: node.path + '/' + entry.name
+                    };
+                    node.children.push(fileNode);
+                    nodeMap.set(fileNode.id, fileNode);
+                }
+            }
+            node.children.sort((a,b) => (a.type === b.type) ? a.name.localeCompare(b.name) : (a.type==='folder' ? -1 : 1));
+            return node;
+        }
+
+        // --- Actions ---
+
+        function navigate(paneNum, folderId) {
+            const node = folderId ? nodeMap.get(folderId) : null;
+            if (paneNum === 1) {
+                if (!node) path1 = [];
+                else {
+                    const idx = path1.findIndex(n => n.id === folderId);
+                    if (idx > -1) path1 = path1.slice(0, idx + 1);
+                    else path1.push(node);
+                }
+                renderPane1();
+            } else {
+                if (!node) path2 = [];
+                else {
+                    const idx = path2.findIndex(n => n.id === folderId);
+                    if (idx > -1) path2 = path2.slice(0, idx + 1);
+                    else path2.push(node);
+                }
+                renderPane2();
+            }
+        }
+
+        function initiateLink(fileId) {
+            if (activeLinkSource === fileId) {
+                activeLinkSource = null; // Toggle off if already active
+            } else {
+                activeLinkSource = fileId;
+                // Mirror path1 to path2 for convenience
+                path2 = [...path1]; 
+            }
+            renderPane1();
+            renderPane2();
+        }
+
+        function createLink(targetFileId) {
+            if (!activeLinkSource) return;
+            if (activeLinkSource === targetFileId) return alert("Cannot link file to itself.");
+            
+            if (!fileLinks[activeLinkSource]) fileLinks[activeLinkSource] = [];
+            
+            if (!fileLinks[activeLinkSource].includes(targetFileId)) {
+                fileLinks[activeLinkSource].push(targetFileId);
+            }
+            
+            // Note: We no longer reset activeLinkSource here to allow multiple linking
+            
+            renderPane1();
+            renderPane2();
+            if (activePreviewFile) renderPane3(activePreviewFile); // Update links tab if open
+        }
+
+        async function previewFile(fileId) {
+            activePreviewFile = fileId;
+            renderPane1(); // Update selection highlight
+            renderPane3(fileId);
+        }
+
+        function switchTab(tabName) {
+            activeTab = tabName;
+            
+            // Update Tab UI
+            document.getElementById('tab-code').className = tabName === 'code' 
+                ? "px-4 py-1 text-sm font-bold bg-[#282c34] rounded-t-lg border border-b-0 border-gray-600 text-white" 
+                : "px-4 py-1 text-sm font-bold bg-transparent rounded-t-lg border border-transparent text-gray-400 hover:text-white";
+                
+            document.getElementById('tab-links').className = tabName === 'links' 
+                ? "px-4 py-1 text-sm font-bold bg-[#282c34] rounded-t-lg border border-b-0 border-gray-600 text-white" 
+                : "px-4 py-1 text-sm font-bold bg-transparent rounded-t-lg border border-transparent text-gray-400 hover:text-white";
+            
+            if (activePreviewFile) renderPane3(activePreviewFile);
+        }
+
+        function jumpToFile(fileId) {
+            const node = nodeMap.get(fileId);
+            if (!node) return;
+
+            // Find path to this file
+            const newPath = [];
+            const parts = node.path.split('/').filter(Boolean); // e.g. ["MyApp", "src", "index.js"]
+            parts.pop(); // Remove file name, keep folders
+            
+            let current = rootNode;
+            for (let i = 1; i < parts.length; i++) { // Start at 1 to skip root name
+                newPath.push(current);
+                current = current.children.find(c => c.name === parts[i] && c.type === 'folder');
+            }
+            if(current && current !== rootNode) newPath.push(current);
+
+            // Update Pane 1
+            path1 = newPath;
+            previewFile(fileId); // Selects and opens it
+            
+            // Wait for DOM update then flash highlight
+            setTimeout(() => {
+                const el = document.getElementById(`p1-file-${fileId}`);
+                if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.remove('highlight-file');
+                    void el.offsetWidth; // trigger reflow
+                    el.classList.add('highlight-file');
+                }
+            }, 50);
+        }
+
+        // --- Renderers ---
+
+        function renderApp() {
+            if (!rootNode) {
+                document.getElementById('setup-screen').classList.remove('hidden');
+                document.getElementById('workspace').classList.add('hidden');
+                document.getElementById('setup-content').innerHTML = `
+                    <h1 class="text-4xl font-black mb-4">Codebase Linker</h1>
+                    <button onclick="openLocalFolder()" class="bg-[#c4b5fd] border-2 border-black font-bold text-xl px-8 py-4 rounded-xl shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] hover:-translate-y-1 hover:translate-x-1 hover:shadow-[6px_6px_0px_0px_rgba(0,0,0,1)] transition-all">
+                        📂 Open Project Folder
+                    </button>
+                `;
+                return;
+            }
+
+            document.getElementById('setup-screen').classList.add('hidden');
+            document.getElementById('workspace').classList.remove('hidden');
+
+            // Top Nav Buttons
+            const nav = document.getElementById('nav-actions');
+            if (isStaticMode) {
+                nav.innerHTML = `
+                    <span class="text-xs font-bold text-amber-600 bg-amber-100 px-2 py-1 rounded border border-amber-300">View-Only Mode</span>
+                    <button onclick="openLocalFolder()" class="text-xs bg-black text-white font-bold px-3 py-1.5 rounded hover:bg-gray-800">Reconnect Folder</button>
+                `;
+            } else {
+                nav.innerHTML = `
+                    <button onclick="exportStaticFile()" class="text-xs bg-white border-2 border-black font-bold px-3 py-1.5 rounded shadow-[2px_2px_0px_0px_rgba(0,0,0,1)] hover:bg-yellow-100 active:shadow-none active:translate-y-0.5 active:translate-x-0.5">
+                        💾 Export Linked HTML
+                    </button>
+                `;
+            }
+
+            renderPane1();
+            renderPane2();
+        }
+
+        function generateBreadcrumbs(paneNum, pathArray) {
+            let html = `<button onclick="navigate(${paneNum}, null)" class="font-bold text-gray-500 hover:text-black flex items-center gap-1">${icons.home} Root</button>`;
+            pathArray.forEach((folder, idx) => {
+                const isLast = idx === pathArray.length - 1;
+                html += `<span class="text-gray-400 mx-1">/</span>
+                         <button onclick="navigate(${paneNum}, '${folder.id}')" class="font-bold ${isLast ? 'text-black' : 'text-gray-500 hover:text-black'}">${folder.name}</button>`;
+            });
+            return html;
+        }
+
+        function renderPane1() {
+            document.getElementById('pane1-breadcrumbs').innerHTML = generateBreadcrumbs(1, path1);
+            
+            const currentFolder = path1.length > 0 ? path1[path1.length - 1] : rootNode;
+            let html = '';
+
+            currentFolder.children.forEach(child => {
+                const isFolder = child.type === 'folder';
+                const linkCount = fileLinks[child.id]?.length || 0;
+                const isSelected = activePreviewFile === child.id;
+                const isLinkingSource = activeLinkSource === child.id;
+
+                let rowClass = "flex items-center justify-between p-2 rounded border border-transparent hover:bg-gray-100 group transition-colors cursor-pointer";
+                if (isSelected) rowClass += " bg-blue-50 border-blue-200";
+                if (isLinkingSource) rowClass += " bg-purple-100 border-purple-300 ring-2 ring-purple-400";
+
+                html += `
+                    <div id="p1-file-${child.id}" class="${rowClass}" ondblclick="${isFolder ? `navigate(1, '${child.id}')` : `previewFile('${child.id}')`}">
+                        <div class="flex items-center gap-2 overflow-hidden" onclick="${isFolder ? `navigate(1, '${child.id}')` : `previewFile('${child.id}')`}">
+                            ${isFolder ? icons.folder : icons.file}
+                            <span class="truncate text-sm font-medium ${isFolder ? 'text-gray-900' : 'text-gray-700'}">${child.name}</span>
+                        </div>
+                        
+                        <div class="flex items-center gap-2 shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity ${isSelected || isLinkingSource || linkCount > 0 ? '!opacity-100' : ''}">
+                            ${!isFolder && linkCount > 0 ? `<span class="bg-blue-100 text-blue-800 text-[10px] font-bold px-1.5 py-0.5 rounded-full flex items-center gap-1">${icons.link} ${linkCount}</span>` : ''}
+                            
+                            ${!isFolder && !isStaticMode ? `
+                                <button onclick="initiateLink('${child.id}'); event.stopPropagation();" class="text-[11px] font-bold rounded px-2 py-1 shadow-sm transition-colors ${isLinkingSource ? 'bg-red-100 text-red-700 border border-red-300 hover:bg-red-200' : 'bg-white border border-gray-300 text-gray-600 hover:border-black hover:bg-purple-50 hover:text-black'}">
+                                    ${isLinkingSource ? '🛑 Done Linking' : '🔗 Link File'}
+                                </button>
+                            ` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            document.getElementById('pane1-content').innerHTML = html || '<div class="text-sm text-gray-400 p-2">Empty folder</div>';
+        }
+
+        function renderPane2() {
+            const overlay = document.getElementById('pane2-overlay');
+            if (!activeLinkSource) {
+                overlay.style.display = 'flex';
+                return;
+            }
+            overlay.style.display = 'none';
+
+            const sourceNode = nodeMap.get(activeLinkSource);
+            document.getElementById('pane2-breadcrumbs').innerHTML = generateBreadcrumbs(2, path2);
+            
+            const currentFolder = path2.length > 0 ? path2[path2.length - 1] : rootNode;
+            let html = '';
+
+            currentFolder.children.forEach(child => {
+                const isFolder = child.type === 'folder';
+                const isAlreadyLinked = fileLinks[activeLinkSource]?.includes(child.id);
+                const isSelf = activeLinkSource === child.id;
+
+                html += `
+                    <div class="flex items-center justify-between p-2 rounded hover:bg-gray-100 cursor-pointer ${isAlreadyLinked ? 'bg-green-50' : ''}" onclick="${isFolder ? `navigate(2, '${child.id}')` : ''}">
+                        <div class="flex items-center gap-2 overflow-hidden">
+                            ${isFolder ? icons.folder : icons.file}
+                            <span class="truncate text-sm font-medium ${isAlreadyLinked ? 'text-green-700' : ''}">${child.name}</span>
+                        </div>
+                        
+                        ${!isFolder && !isSelf ? `
+                            ${isAlreadyLinked ? `
+                                <span class="text-xs font-bold text-green-600 bg-green-100 px-2 py-1 rounded">Linked ✓</span>
+                            ` : `
+                                <button onclick="createLink('${child.id}'); event.stopPropagation();" class="text-[11px] font-bold bg-purple-600 text-white rounded px-2 py-1 shadow-sm hover:bg-purple-700 shrink-0">
+                                    Link to ${sourceNode.name}
+                                </button>
+                            `}
+                        ` : ''}
+                        ${isSelf ? '<span class="text-xs text-gray-400">(Source File)</span>' : ''}
+                    </div>
+                `;
+            });
+            
+            document.getElementById('pane2-content').innerHTML = html || '<div class="text-sm text-gray-400 p-2">Empty folder</div>';
+        }
+
+        async function renderPane3(fileId) {
+            const node = nodeMap.get(fileId);
+            const container = document.getElementById('pane3-content');
+            
+            if (activeTab === 'code') {
+                if (isStaticMode && !node.handle) {
+                    container.innerHTML = `
+                        <div class="flex flex-col items-center justify-center h-full text-center p-8">
+                            <span class="text-4xl mb-4">🔒</span>
+                            <h3 class="text-white font-bold text-lg mb-2">Code requires Local Folder</h3>
+                            <p class="text-gray-400 text-sm mb-4">You are viewing an exported static file. To read actual code contents, you must reconnect the original folder.</p>
+                            <button onclick="openLocalFolder()" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded">Reconnect Folder</button>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = `<div class="text-gray-400">Loading code...</div>`;
+                try {
+                    const file = await node.handle.getFile();
+                    const text = await file.text();
+                    
+                    // Simple file extension mapping for Highlight.js
+                    const ext = node.name.split('.').pop().toLowerCase();
+                    let lang = ext;
+                    if (ext === 'jsx' || ext === 'tsx') lang = 'javascript';
+                    if (ext === 'html') lang = 'xml';
+                    
+                    container.innerHTML = `
+                        <div class="mb-4 pb-2 border-b border-gray-700 flex items-center justify-between">
+                            <span class="font-bold text-gray-300">${node.path}</span>
+                        </div>
+                        <pre class="text-sm"><code class="language-${lang} rounded-lg bg-[#282c34]">${escapeHtml(text)}</code></pre>
+                    `;
+                    hljs.highlightAll();
+                } catch (e) {
+                    container.innerHTML = `<div class="text-red-400">Error reading file: ${e.message}</div>`;
+                }
+            } 
+            else if (activeTab === 'links') {
+                const links = fileLinks[fileId] || [];
+                let linksHtml = `
+                    <div class="mb-4 pb-2 border-b border-gray-700">
+                        <span class="font-bold text-gray-300">Files linked to: ${node.name}</span>
+                    </div>
+                `;
+
+                if (links.length === 0) {
+                    linksHtml += `<div class="text-gray-500 italic">No files linked yet.</div>`;
+                } else {
+                    linksHtml += `<div class="space-y-2">`;
+                    links.forEach(targetId => {
+                        const targetNode = nodeMap.get(targetId);
+                        if (targetNode) {
+                            linksHtml += `
+                                <div onclick="jumpToFile('${targetId}')" class="bg-[#1e2227] border border-gray-700 p-3 rounded hover:border-blue-400 cursor-pointer transition-colors group">
+                                    <div class="flex items-center gap-2 mb-1">
+                                        ${icons.file}
+                                        <span class="text-blue-400 font-bold group-hover:underline">${targetNode.name}</span>
+                                    </div>
+                                    <div class="text-xs text-gray-500 ml-6 break-all">${targetNode.path}</div>
+                                </div>
+                            `;
+                        }
+                    });
+                    linksHtml += `</div>`;
+                }
+                container.innerHTML = linksHtml;
+            }
+        }
+
+        // --- Export Logic ---
+
+        // Removes 'handle' properties which cannot be JSON serialized
+        function cleanTreeForExport(node) {
+            const cleanNode = {
+                id: node.id,
+                name: node.name,
+                type: node.type,
+                path: node.path,
+                children: node.children ? node.children.map(cleanTreeForExport) : []
+            };
+            return cleanNode;
+        }
+
+        function exportStaticFile() {
+            if (!rootNode) return;
+            
+            const exportData = {
+                tree: cleanTreeForExport(rootNode),
+                links: fileLinks
+            };
+
+            const htmlClone = document.documentElement.cloneNode(true);
+            
+            // Inject JSON
+            const scriptTag = htmlClone.querySelector('#main-script');
+            const safeJson = JSON.stringify(exportData).replace(/</g, '\\u003c');
+            scriptTag.textContent = scriptTag.textContent.replace(
+                /\/\*INJECT_DATA\*\/.*?\/\*END_INJECT\*\//s,
+                `/*INJECT_DATA*/${safeJson}/*END_INJECT*/`
+            );
+
+            // Trigger download
+            const finalHtml = '<!DOCTYPE html>\n' + htmlClone.outerHTML;
+            const blob = new Blob([finalHtml], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `Codebase-Links-${rootNode.name}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
+        // Helper to reconnect a previously exported tree to local file handles
+        async function rebindHandles(savedNode, dirHandle) {
+            savedNode.handle = dirHandle;
+            if (!savedNode.children) return;
+
+            for (const child of savedNode.children) {
+                try {
+                    if (child.type === 'folder') {
+                        const childHandle = await dirHandle.getDirectoryHandle(child.name);
+                        await rebindHandles(child, childHandle);
+                    } else {
+                        const childHandle = await dirHandle.getFileHandle(child.name);
+                        child.handle = childHandle;
+                    }
+                } catch(e) {
+                    console.warn(`Could not rebind handle for ${child.name}`);
+                }
+            }
+        }
+
+        function escapeHtml(unsafe) {
+            return unsafe
+                 .replace(/&/g, "&amp;")
+                 .replace(/</g, "&lt;")
+                 .replace(/>/g, "&gt;")
+                 .replace(/"/g, "&quot;")
+                 .replace(/'/g, "&#039;");
+        }
+
+        // Start
+        renderApp();
+
+    </script>
+</body>
+</html>
